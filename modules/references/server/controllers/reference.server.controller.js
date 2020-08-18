@@ -378,43 +378,87 @@ exports.readMany = async function readMany(req, res, next) {
     const self = req.user;
 
     // build a query
-    const query = (function buildQuery() {
-      const query = {};
+    const matchQuery = {};
 
-      /**
-       * Allow non-public references only when userFrom or userTo is self
-       */
-      const isSelfUserFromOrUserTo =
-        self._id.equals(userFrom) || self._id.equals(userTo);
-      if (!isSelfUserFromOrUserTo) {
-        query.public = true;
-      }
+    // Allow non-public references only when userFrom or userTo is self
+    if (!self._id.equals(userFrom) && !self._id.equals(userTo)) {
+      matchQuery.public = true;
+    }
 
-      /**
-       * Filter by userFrom
-       */
-      if (userFrom) {
-        query.userFrom = userFrom;
-      }
+    // Filter by userFrom
+    if (userFrom) {
+      matchQuery.userFrom = new mongoose.Types.ObjectId(userFrom);
+    }
 
-      /**
-       * Filter by userTo
-       */
-      if (userTo) {
-        query.userTo = userTo;
-      }
+    // Filter by userTo
+    if (userTo) {
+      matchQuery.userTo = new mongoose.Types.ObjectId(userTo);
+    }
 
-      return query;
-    })();
+    // Aggregate projection for User in reference
+    const userKeys = {
+      id: 1,
+      updated: 1,
+      displayName: 1,
+      username: 1,
+      avatarSource: 1,
+      avatarUploaded: 1,
+      emailHash: 1,
+      created: 1,
+      additionalProvidersData: {
+        facebook: {
+          id: 1,
+        },
+      },
+    };
 
-    // find references by query
-    const references = await Reference.find(query)
-      .select(referenceFields)
-      .populate(
-        'userFrom userTo',
-        userProfile.userMiniProfileFields + ' created',
-      )
-      .exec();
+    // Find references
+    const references = await Reference.aggregate([
+      {
+        $match: matchQuery,
+      },
+
+      // Extend user objects
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userTo',
+          foreignField: '_id',
+          as: 'userTo',
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'userFrom',
+          foreignField: '_id',
+          as: 'userFrom',
+        },
+      },
+
+      // Because above `$lookup`s return and arrays with one user
+      // `[{userObject}]`, we have to unwind it back to `{userObject}`
+      { $unwind: '$userTo' },
+      { $unwind: '$userFrom' },
+
+      // Pick fields to receive
+      {
+        $project: {
+          _id: 1,
+          created: 1,
+          public: 1,
+          userFrom: userKeys,
+          userTo: userKeys,
+          feedbackPublic: 1,
+          interactions: {
+            hostedMe: 1,
+            hostedThem: 1,
+            met: 1,
+          },
+          recommend: 1,
+        },
+      },
+    ]).exec();
 
     // is the logged user userFrom?
     const isSelfUserFrom = self._id.equals(userFrom);
